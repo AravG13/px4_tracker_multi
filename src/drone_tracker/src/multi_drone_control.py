@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Fixed PX4 Controller with Multi-Instance Support
-Handles namespace routing for typhoon_h480 drones
+Multi-Vehicle PX4 Controller - Control ONE drone at a time
+Uses namespacing: /drone_{vehicle_id}/ for ROS topics
+                  /px4_{vehicle_id}/fmu/ for PX4 topics
 """
 
 import rclpy
@@ -96,90 +97,82 @@ class ExponentialSmoother:
         self.value = 0.0
         self.initialized = False
 
-class FixedPX4Controller(Node):
+class MultiVehiclePX4Controller(Node):
     def __init__(self):
-        super().__init__('fixed_px4_controller')
+        super().__init__('multi_vehicle_px4_controller')
         
-        # Get px4_instance parameter
-        self.declare_parameter('px4_instance', 0)
-        self.px4_instance = self.get_parameter('px4_instance').value
+        # ============================================
+        # MULTI-VEHICLE CONFIGURATION
+        # ============================================
+        self.declare_parameter('vehicle_id', 1)
+        self.vehicle_id = self.get_parameter('vehicle_id').value
         
-        # Determine namespace prefix for PX4 topics
-        # Instance 0: no prefix (root namespace)
-        # Instance N: /px4_N/ prefix
-        if self.px4_instance == 0:
-            self.px4_namespace = ""
-            self.topic_prefix = ""
-        else:
-            self.px4_namespace = f"px4_{self.px4_instance}"
-            self.topic_prefix = f"/{self.px4_namespace}"
+        # PX4 namespace (from PX4 multi-vehicle)
+        self.px4_ns = f'/px4_{self.vehicle_id}'
         
-        self.get_logger().info("=" * 60)
-        self.get_logger().info(f"Fixed PX4 Controller - Instance {self.px4_instance}")
-        self.get_logger().info(f"PX4 Topic Prefix: '{self.topic_prefix}'")
-        self.get_logger().info(f"MAV_SYS_ID: {self.px4_instance + 1}")
-        self.get_logger().info("=" * 60)
+        # ROS namespace (for our topics)
+        self.ros_ns = f'/drone_{self.vehicle_id}'
+        
+        self.get_logger().info("="*60)
+        self.get_logger().info(f"  Multi-Vehicle Controller - Vehicle {self.vehicle_id}")
+        self.get_logger().info("="*60)
+        self.get_logger().info(f"PX4 Topics:  {self.px4_ns}/fmu/*")
+        self.get_logger().info(f"ROS Topics:  {self.ros_ns}/*")
+        self.get_logger().info(f"Services:    {self.ros_ns}/*")
+        self.get_logger().info("="*60)
         
         # QoS profile for PX4
         qos_profile = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
             history=HistoryPolicy.KEEP_LAST,
-            depth=10
+            depth=1
         )
         
-        # Publishers - use namespaced topics
+        # ============================================
+        # PX4 Publishers (namespaced by vehicle)
+        # ============================================
         self.command_pub = self.create_publisher(
-            VehicleCommand, 
-            f'{self.topic_prefix}/fmu/in/vehicle_command', 
-            qos_profile)
+            VehicleCommand, f'{self.px4_ns}/fmu/in/vehicle_command', qos_profile)
         self.offboard_pub = self.create_publisher(
-            OffboardControlMode, 
-            f'{self.topic_prefix}/fmu/in/offboard_control_mode', 
-            qos_profile)
+            OffboardControlMode, f'{self.px4_ns}/fmu/in/offboard_control_mode', qos_profile)
         self.setpoint_pub = self.create_publisher(
-            TrajectorySetpoint, 
-            f'{self.topic_prefix}/fmu/in/trajectory_setpoint', 
-            qos_profile)
+            TrajectorySetpoint, f'{self.px4_ns}/fmu/in/trajectory_setpoint', qos_profile)
         
-        self.get_logger().info(f"Publishing commands to: {self.topic_prefix}/fmu/in/...")
-        
-        # Subscribers - use namespaced topics
+        # ============================================
+        # PX4 Subscribers (namespaced by vehicle)
+        # ============================================
         self.status_sub = self.create_subscription(
-            VehicleStatus, 
-            f'{self.topic_prefix}/fmu/out/vehicle_status_v1', 
-            self.status_callback, 
-            qos_profile)
+            VehicleStatus, f'{self.px4_ns}/fmu/out/vehicle_status', 
+            self.status_callback, qos_profile)
         self.position_sub = self.create_subscription(
-            VehicleLocalPosition, 
-            f'{self.topic_prefix}/fmu/out/vehicle_local_position_v1',
-            self.position_callback, 
-            qos_profile)
+            VehicleLocalPosition, f'{self.px4_ns}/fmu/out/vehicle_local_position',
+            self.position_callback, qos_profile)
         
-        self.get_logger().info(f"Subscribed to: {self.topic_prefix}/fmu/out/...")
-        
-        # Tracking topics - always in root namespace
+        # ============================================
+        # Tracking Subscribers (namespaced by vehicle)
+        # ============================================
         self.target_sub = self.create_subscription(
-            PointStamped, '/detected_target',
+            PointStamped, f'{self.ros_ns}/detected_target',
             self.target_callback, 10)
         self.bbox_sub = self.create_subscription(
-           Vector3, '/target_bbox_info',
-           self.bbox_callback, 10)
+            Vector3, f'{self.ros_ns}/target_bbox_info',
+            self.bbox_callback, 10)
         
-        self.get_logger().info("Subscribed to tracking topics: /detected_target, /target_bbox_info")
+        # ============================================
+        # Services (namespaced by vehicle)
+        # ============================================
+        self.create_service(Empty, f'{self.ros_ns}/arm', self.arm_callback)
+        self.create_service(Empty, f'{self.ros_ns}/disarm', self.disarm_callback)
+        self.create_service(Empty, f'{self.ros_ns}/takeoff', self.takeoff_callback)
+        self.create_service(Empty, f'{self.ros_ns}/land', self.land_callback)
+        self.create_service(Empty, f'{self.ros_ns}/emergency', self.emergency_callback)
+        self.create_service(Empty, f'{self.ros_ns}/start_tracking', self.start_tracking_callback)
+        self.create_service(Empty, f'{self.ros_ns}/stop_tracking', self.stop_tracking_callback)
         
-        # Services - in root namespace for easy access
-        self.create_service(Empty, '/drone/arm', self.arm_callback)
-        self.create_service(Empty, '/drone/disarm', self.disarm_callback)
-        self.create_service(Empty, '/drone/takeoff', self.takeoff_callback)
-        self.create_service(Empty, '/drone/land', self.land_callback)
-        self.create_service(Empty, '/drone/emergency', self.emergency_callback)
-        self.create_service(Empty, '/drone/start_tracking', self.start_tracking_callback)
-        self.create_service(Empty, '/drone/stop_tracking', self.stop_tracking_callback)
-        
-        self.get_logger().info("Services available at: /drone/{arm,disarm,takeoff,land,emergency,start_tracking,stop_tracking}")
-        
+        # ============================================
         # State variables
+        # ============================================
         self.state = DroneState.DISARMED
         self.armed = False
         self.nav_state = 0
@@ -224,7 +217,6 @@ class FixedPX4Controller(Node):
         
         # Ground safety
         self.estimated_altitude = 5.0
-        self.last_altitude_update = time.time()
         self.prev_bbox_size = 0.0
         self.prev_bbox_time = time.time()
         self.size_rate = 0.0
@@ -234,42 +226,18 @@ class FixedPX4Controller(Node):
         self.state_timer = self.create_timer(0.1, self.state_machine)
         self.control_timer = self.create_timer(0.05, self.tracking_control_loop)
         
-        # Connection check timer
-        self.connection_check_timer = self.create_timer(2.0, self.check_px4_connection)
-        self.px4_connected = False
-        self.status_received = False
-        
-        self.get_logger().info("Controller initialized - waiting for PX4 connection...")
-    
-    def check_px4_connection(self):
-        """Check if we're receiving data from PX4"""
-        if not self.status_received:
-            self.get_logger().warn(
-                f"No PX4 status received yet. Check topics exist:\n"
-                f"  ros2 topic list | grep {self.topic_prefix}/fmu/out",
-                throttle_duration_sec=5.0
-            )
-        else:
-            if not self.px4_connected:
-                self.px4_connected = True
-                self.get_logger().info("✓ PX4 connection established!")
-                self.connection_check_timer.cancel()
+        self.get_logger().info(f"✓ Vehicle {self.vehicle_id} controller ready!")
+        self.get_logger().info(f"✓ Services: {self.ros_ns}/[arm|takeoff|start_tracking|land]")
+        self.get_logger().info("Waiting for PX4 connection...")
     
     def status_callback(self, msg):
-        self.status_received = True
         old_armed = self.armed
-        old_nav_state = self.nav_state
         self.armed = (msg.arming_state == VehicleStatus.ARMING_STATE_ARMED)
         self.nav_state = msg.nav_state
         
         if old_armed != self.armed:
             status = "ARMED" if self.armed else "DISARMED"
-            self.get_logger().info(f"🚁 Drone {self.px4_instance}: {status}")
-        
-        if old_nav_state != self.nav_state:
-            nav_states = {14: "OFFBOARD", 4: "AUTO_LOITER", 0: "MANUAL", 2: "POSCTL"}
-            state_name = nav_states.get(self.nav_state, f"UNKNOWN({self.nav_state})")
-            self.get_logger().info(f"Nav state: {old_nav_state} -> {self.nav_state} ({state_name})")
+            self.get_logger().info(f"[V{self.vehicle_id}] {status}")
         
         if not self.armed and self.state != DroneState.DISARMED:
             self.state = DroneState.DISARMED
@@ -285,7 +253,7 @@ class FixedPX4Controller(Node):
         if self.home_pos is None and self.armed:
             self.home_pos = self.current_pos.copy()
             self.hover_altitude = msg.z
-            self.get_logger().info(f"Home position set: {self.home_pos}")
+            self.get_logger().info(f"[V{self.vehicle_id}] Home: [{msg.x:.1f}, {msg.y:.1f}, {msg.z:.1f}]")
     
     def target_callback(self, msg):
         cx = self.tracking_data.frame_width / 2
@@ -329,7 +297,6 @@ class FixedPX4Controller(Node):
         dt = max(min(dt, 0.1), 0.01)
         self.last_control_time = current_time
         
-        # Calculate errors
         cx = self.tracking_data.frame_width / 2
         cy = self.tracking_data.frame_height / 2
         
@@ -339,30 +306,71 @@ class FixedPX4Controller(Node):
         current_size = math.sqrt(self.tracking_data.bbox_area)
         boundary_violation = self.tracking_data.boundary_violation
         
-        # Backing away logic
-        if not self.backing_away_mode and boundary_violation:
+        boundary_error = 0.0
+        if self.tracking_data.bbox_area > 0:
+            margin = 50
+            frame_w = self.tracking_data.frame_width
+            frame_h = self.tracking_data.frame_height
+            
+            bbox_half_size = math.sqrt(self.tracking_data.bbox_area) / 2
+            bbox_x = self.tracking_data.pixel_x - bbox_half_size
+            bbox_y = self.tracking_data.pixel_y - bbox_half_size
+            bbox_x2 = self.tracking_data.pixel_x + bbox_half_size
+            bbox_y2 = self.tracking_data.pixel_y + bbox_half_size
+            
+            if bbox_x < margin: boundary_error += (margin - bbox_x) / frame_w
+            if bbox_y < margin: boundary_error += (margin - bbox_y) / frame_h
+            if bbox_x2 > frame_w - margin: boundary_error += (bbox_x2 - (frame_w - margin)) / frame_w
+            if bbox_y2 > frame_h - margin: boundary_error += (bbox_y2 - (frame_h - margin)) / frame_h
+        
+        if not self.backing_away_mode and (boundary_violation or boundary_error > 0.05):
             self.backing_away_mode = True
             self.backup_start_time = current_time
-            self.get_logger().info("STARTING BACKUP MODE")
+            self.get_logger().info(f"[V{self.vehicle_id}] BACKUP MODE")
         elif self.backing_away_mode:
             backup_elapsed = current_time - self.backup_start_time
-            if backup_elapsed >= self.backup_duration and not boundary_violation:
+            if backup_elapsed >= self.backup_duration and not boundary_violation and boundary_error < 0.02:
                 self.backing_away_mode = False
-                self.get_logger().info("BACKUP COMPLETE")
+                self.get_logger().info(f"[V{self.vehicle_id}] BACKUP COMPLETE")
         
-        # Distance control
-        TARGET_DISTANCE_PIXELS = 70.0
         if self.backing_away_mode:
-            distance_error = 0.5
+            backup_elapsed = current_time - self.backup_start_time
+            if backup_elapsed < 0.5:
+                backup_intensity = 0.2 + (0.6 * (backup_elapsed / 0.5))
+            else:
+                backup_intensity = 0.8 * math.exp(-(backup_elapsed - 0.5) / 2.0)
+            distance_error = backup_intensity
+            if boundary_violation or boundary_error > 0.03:
+                distance_error = max(distance_error, 0.3)
         else:
+            TARGET_DISTANCE_PIXELS = 70.0
+            
+            if not hasattr(self, 'prev_bbox_size'):
+                self.prev_bbox_size = current_size
+                self.prev_bbox_time = current_time
+                self.size_rate = 0.0
+            
+            size_dt = current_time - self.prev_bbox_time
+            if size_dt > 0.1:
+                self.size_rate = (current_size - self.prev_bbox_size) / size_dt
+                self.prev_bbox_size = current_size
+                self.prev_bbox_time = current_time
+            
             size_error = (current_size - TARGET_DISTANCE_PIXELS) / TARGET_DISTANCE_PIXELS
-            distance_error = max(min(size_error, 0.4), -0.4)
+            
+            rate_threshold = 3.0
+            if abs(self.size_rate) > rate_threshold:
+                rate_error = self.size_rate / 30.0
+                distance_error = size_error + rate_error * 0.6
+            else:
+                distance_error = size_error
+            
+            distance_error = max(min(distance_error, 0.4), -0.4)
         
-        # Deadzones
         POSITION_DEADZONE = 0.08
+        ALTITUDE_DEADZONE = 0.15
         DISTANCE_DEADZONE = 0.12
         
-        # Control computation
         ctrl_x = 0.0
         ctrl_y = 0.0
         
@@ -374,13 +382,28 @@ class FixedPX4Controller(Node):
         if abs(distance_error) > DISTANCE_DEADZONE:
             ctrl_x = -self.pid_distance.compute(distance_error, dt)
         else:
+            ctrl_x = 0.0
             self.pid_distance.reset()
         
-        # Apply smoothing
+        if not hasattr(self, 'prev_ctrl_x'):
+            self.prev_ctrl_x = 0.0
+            self.prev_ctrl_y = 0.0
+        
+        MAX_ACCEL = 0.4
+        delta_x = ctrl_x - self.prev_ctrl_x
+        delta_y = ctrl_y - self.prev_ctrl_y
+        
+        if abs(delta_x) > MAX_ACCEL:
+            ctrl_x = self.prev_ctrl_x + (MAX_ACCEL if delta_x > 0 else -MAX_ACCEL)
+        if abs(delta_y) > MAX_ACCEL:
+            ctrl_y = self.prev_ctrl_y + (MAX_ACCEL if delta_y > 0 else -MAX_ACCEL)
+        
+        self.prev_ctrl_x = ctrl_x
+        self.prev_ctrl_y = ctrl_y
+        
         vx = self.smoother_x.filter(ctrl_x)
         vy = self.smoother_y.filter(ctrl_y)
         
-        # Velocity limits
         MAX_VEL_XY = 1.0
         vx = max(min(vx, MAX_VEL_XY), -MAX_VEL_XY)
         vy = max(min(vy, MAX_VEL_XY), -MAX_VEL_XY)
@@ -388,39 +411,21 @@ class FixedPX4Controller(Node):
         if abs(vx) < 0.05: vx = 0.0
         if abs(vy) < 0.05: vy = 0.0
         
-        # Transform body to NED
         yaw = getattr(self, 'current_heading', 0.0)
         ned_vx = vx * math.cos(yaw) - vy * math.sin(yaw)
         ned_vy = vx * math.sin(yaw) + vy * math.cos(yaw)
         
-        # Altitude control
         if not hasattr(self, 'target_altitude'):
             self.target_altitude = self.takeoff_altitude
         
         if self.estimated_altitude < 2.0:
             self.target_altitude = -6.0
-            self.get_logger().error(f"GROUND SAFETY: {self.estimated_altitude:.1f}m - CLIMBING")
-        else:
-            # Active vertical tracking based on err_y
-            ALTITUDE_DEADZONE = 0.12
-            if abs(err_y) > ALTITUDE_DEADZONE and self.estimated_altitude > 3.0:
-                # err_y > 0: object below center → descend (increase altitude in NED)
-                # err_y < 0: object above center → climb (decrease altitude in NED)
-                altitude_adjustment = err_y * 1.2
-                delta_alt = altitude_adjustment * 0.06
-                self.target_altitude += delta_alt
-                
-                # Clamp altitude limits
-                self.target_altitude = max(min(self.target_altitude, -2.0), -10.0)
-                
-                if abs(delta_alt) > 0.02:
-                    self.get_logger().info(
-                        f"ALT: err_y={err_y:+.2f} → target={-self.target_altitude:.1f}m current={self.estimated_altitude:.1f}m",
-                        throttle_duration_sec=0.5
-                    )
+            self.get_logger().error(f"[V{self.vehicle_id}] GROUND SAFETY: {self.estimated_altitude:.1f}m - CLIMBING")
+        elif abs(err_y) > ALTITUDE_DEADZONE and self.estimated_altitude > 3.0:
+            altitude_adjustment = err_y * 0.8
+            self.target_altitude += altitude_adjustment * 0.04
+            self.target_altitude = max(min(self.target_altitude, -2.5), -8.0)
         
-        
-        # Build setpoint
         setpoint = TrajectorySetpoint()
         setpoint.timestamp = int(self.get_clock().now().nanoseconds / 1000)
         setpoint.position = [float('nan'), float('nan'), self.target_altitude]
@@ -460,13 +465,11 @@ class FixedPX4Controller(Node):
         msg.param6 = 0.0
         msg.param7 = 0.0
         msg.command = command
-        msg.target_system = self.px4_instance + 1  # CRITICAL: Set correct MAV_SYS_ID
+        msg.target_system = 1
         msg.target_component = 1
         msg.source_system = 1
         msg.source_component = 1
         msg.from_external = True
-        
-        self.get_logger().info(f"Sending command {command} to system {msg.target_system}")
         self.command_pub.publish(msg)
     
     def state_machine(self):
@@ -476,18 +479,14 @@ class FixedPX4Controller(Node):
             elapsed = (now - self.command_start_time).nanoseconds / 1e9
             
             if self.sequence_step == 1 and elapsed > 1.0:
-                self.get_logger().info("Switching to OFFBOARD mode...")
                 self.send_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0)
                 self.sequence_step = 2
-                
             elif self.sequence_step == 2 and elapsed > 2.0:
-                self.get_logger().info(f"Takeoff command - target: {-self.takeoff_altitude}m")
                 self.state = DroneState.TAKING_OFF
                 self.sequence_step = 0
                 
         elif self.state == DroneState.TAKING_OFF:
             self.send_takeoff_setpoint()
-            
             if self.nav_state != 14:
                 self.send_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0)
             
@@ -495,15 +494,14 @@ class FixedPX4Controller(Node):
             target_altitude = -self.takeoff_altitude
             
             if abs(current_altitude - target_altitude) < 0.8:
-                self.get_logger().info(f"✓ Takeoff complete at {current_altitude:.1f}m")
+                self.get_logger().info(f"[V{self.vehicle_id}] ✓ Takeoff complete at {current_altitude:.1f}m")
                 self.state = DroneState.HOVERING
                 
         elif self.state == DroneState.HOVERING:
             self.send_hover_setpoint()
-        
         elif self.state == DroneState.TRACKING:
             if self.nav_state != 14:
-                self.get_logger().warn("Lost OFFBOARD mode!", throttle_duration_sec=2.0)
+                self.get_logger().warn(f"[V{self.vehicle_id}] Lost OFFBOARD!", throttle_duration_sec=2.0)
     
     def send_takeoff_setpoint(self):
         setpoint = TrajectorySetpoint()
@@ -524,36 +522,29 @@ class FixedPX4Controller(Node):
     # Service callbacks
     def arm_callback(self, request, response):
         if self.state != DroneState.DISARMED:
-            self.get_logger().warn("Already armed or in operation")
             return response
         
-        self.get_logger().info("🚁 ARM sequence starting...")
+        self.get_logger().info(f"[V{self.vehicle_id}] ARM sequence...")
         self.send_command(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0)
         time.sleep(2.0)
         
-        self.get_logger().info("Streaming initial setpoints...")
         for i in range(100):
             setpoint = TrajectorySetpoint()
             setpoint.timestamp = int(self.get_clock().now().nanoseconds / 1000)
-            setpoint.position = [0.0, 0.0, self.takeoff_altitude]
+            setpoint.position = [0.0, 0.0, self.takeoff_altitude] 
             setpoint.velocity = [0.0, 0.0, 0.0]
             setpoint.yaw = float('nan')
             self.setpoint_pub.publish(setpoint)
             time.sleep(0.02)
         
-        self.get_logger().info("Switching to OFFBOARD mode...")
         self.send_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 6.0)
         time.sleep(1.0)
-        
         self.state = DroneState.ARMED
         self.command_start_time = self.get_clock().now()
         self.sequence_step = 1
-        
-        self.get_logger().info("✓ ARM sequence complete")
         return response
     
     def disarm_callback(self, request, response):
-        self.get_logger().info("DISARM command")
         self.send_command(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, 0.0)
         self.state = DroneState.DISARMED
         self.tracking_enabled = False
@@ -561,19 +552,16 @@ class FixedPX4Controller(Node):
     
     def takeoff_callback(self, request, response):
         if self.state == DroneState.DISARMED:
-            self.get_logger().info("Auto-arming for takeoff...")
             return self.arm_callback(request, response)
         return response
     
     def land_callback(self, request, response):
-        self.get_logger().info("LAND command")
         self.send_command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
         self.state = DroneState.LANDING
         self.tracking_enabled = False
         return response
     
     def emergency_callback(self, request, response):
-        self.get_logger().error("⚠️ EMERGENCY STOP!")
         self.send_command(VehicleCommand.VEHICLE_CMD_DO_SET_MODE, 1.0, 4.0)
         self.state = DroneState.EMERGENCY
         self.tracking_enabled = False
@@ -581,14 +569,14 @@ class FixedPX4Controller(Node):
     
     def start_tracking_callback(self, request, response):
         if self.state not in [DroneState.HOVERING, DroneState.TRACKING]:
-            self.get_logger().warn(f"Must be HOVERING to start tracking (current: {self.state.name})")
+            self.get_logger().warn(f"[V{self.vehicle_id}] Can only track from HOVER")
             return response
         
         if self.tracking_data.bbox_area <= 0:
-            self.get_logger().warn("⚠️ No target selected! Select ROI in tracker window first.")
+            self.get_logger().warn(f"[V{self.vehicle_id}] No target selected!")
             return response
         
-        self.get_logger().info("🎯 Starting tracking mode...")
+        self.get_logger().info(f"[V{self.vehicle_id}] ✓ Starting tracking")
         self.tracking_enabled = True
         self.state = DroneState.TRACKING
         self.reset_controllers()
@@ -596,7 +584,7 @@ class FixedPX4Controller(Node):
         return response
     
     def stop_tracking_callback(self, request, response):
-        self.get_logger().info("⏸️ Stopping tracking - entering hover mode")
+        self.get_logger().info(f"[V{self.vehicle_id}] Stopping tracking")
         self.tracking_enabled = False
         self.state = DroneState.HOVERING
         self.reset_controllers()
@@ -604,12 +592,12 @@ class FixedPX4Controller(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = FixedPX4Controller()
+    node = MultiVehiclePX4Controller()
     
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        node.get_logger().info("Interrupted by user")
+        node.get_logger().info("Interrupted")
     finally:
         node.destroy_node()
         rclpy.shutdown()

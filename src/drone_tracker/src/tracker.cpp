@@ -5,12 +5,21 @@
 static TrackerNode* g_tracker_node_instance = nullptr;
 
 TrackerNode::TrackerNode() : Node("tracker_node") {
+    this->declare_parameter<int>("px4_instance", 0);
+    int px4_instance = this->get_parameter("px4_instance").as_int();
+    
+    std::string camera_topic = "/camera/image_raw";
+    if (px4_instance > 0) {
+        camera_topic = "/px4_" + std::to_string(px4_instance) + "/camera/image_raw";
+    }
+    
+    RCLCPP_INFO(this->get_logger(), "Camera topic: %s", camera_topic.c_str());
     target_pub_ = this->create_publisher<geometry_msgs::msg::PointStamped>("/detected_target", 10);
     enhanced_target_pub_ = this->create_publisher<geometry_msgs::msg::TwistStamped>("/enhanced_target_data", 10);
     bbox_pub_ = this->create_publisher<geometry_msgs::msg::Vector3>("/target_bbox_info", 10);
     
     image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
-        "/camera/image_raw", 10,
+        camera_topic, 10,  // Use camera_topic instead of hardcoded "/camera/image_raw"
         std::bind(&TrackerNode::image_callback, this, std::placeholders::_1));
     
     tracker_ = std::make_unique<ObjectTracker>();

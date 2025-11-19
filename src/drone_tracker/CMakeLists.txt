@@ -60,6 +60,7 @@ install(PROGRAMS
   scripts/manual_drone_control.py
   scripts/csv_logger.py
   scripts/data_logger.py
+  src/multi_drone_control.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

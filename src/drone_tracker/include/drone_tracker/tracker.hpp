@@ -1,3 +1,4 @@
+// include/drone_tracker/tracker.hpp
 #pragma once
 
 #include <rclcpp/rclcpp.hpp>
@@ -11,7 +12,7 @@
 #include "drone_tracker/object_tracker.hpp"
 #include <geometry_msgs/msg/vector3.hpp>
 
-// Enhanced PID Controller (same as before)
+// PID Controller
 class StablePIDController {
 public:
     StablePIDController(double kp, double ki, double kd, double max_output = 1.0, double max_integral = 0.3) 
@@ -48,7 +49,7 @@ private:
     double prev_error_, integral_, prev_derivative_;
 };
 
-// Distance Estimator (same as before)
+// Distance Estimator
 class Distance3DEstimator {
 public:
     Distance3DEstimator(double known_object_size_m = 1.0, double camera_focal_length_px = 350.0)
@@ -78,7 +79,7 @@ public:
 private:
   void image_callback(const sensor_msgs::msg::Image::SharedPtr msg);
   
-  // Enhanced tracking methods
+  // Helper methods
   bool is_roi_fully_visible(const cv::Rect& bbox, int frame_width, int frame_height, int margin = 30);
   double calculate_bbox_size(const cv::Rect& bbox);
   void draw_enhanced_feedback(cv::Mat& frame, const cv::Point& obj_center, 
@@ -87,7 +88,7 @@ private:
   void draw_status(cv::Mat& frame);
   void handle_key_input(int key);
   
-  // NEW: Scale adaptation and reinitialization from Gazebo
+  // Scale adaptation methods
   void attempt_tracker_reinitialization(cv::Mat& frame, const cv::Rect& last_known_bbox);
   bool validate_bbox(const cv::Rect& bbox, int frame_width, int frame_height);
   cv::Rect apply_scale_estimation(const cv::Rect& current_bbox, const cv::Mat& frame);
@@ -124,7 +125,12 @@ private:
   int consecutive_failures_{0};
   double target_distance_{3.5};
   
-  // NEW: Scale adaptation from Gazebo
+  // Diagnostic variables
+  bool first_frame_received_{false};
+  int frame_count_{0};
+  rclcpp::TimerBase::SharedPtr camera_check_timer_;
+  
+  // Scale adaptation
   cv::Rect last_valid_bbox_;
   std::deque<double> scale_history_;
   static const size_t MAX_SCALE_HISTORY = 10;
