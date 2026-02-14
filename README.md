@@ -228,38 +228,15 @@ $$v_\text{NED,y} = v_x \sin\psi + v_y \cos\psi$$
 
 ## Trust System
 
-Trust scores quantify each drone's reliability and govern task prioritisation.
-
-### Combined Trust
-
-$$T_{\text{comb},i} = \alpha \cdot T_{\text{dir},i} + (1-\alpha) \cdot \bigl(\rho \cdot T_{\text{dir},i} + (1-\rho) \cdot T_{\text{ind},i}\bigr)$$
-
-Where α is the weight for direct trust and ρ is the weight for direct trust within the indirect component.
+Trust scores quantify each drone's reliability and govern task prioritisation. The trust model combines two components:
 
 ### Direct Trust
 
-First-hand evaluation of a drone's own state:
-
-$$T_{\text{dir},i} = e^{-d_i/d_0} \cdot \text{battery}_i \cdot (1 - H_{\text{env},i}) \cdot (1 - n_i)$$
-
-| Factor | Description |
-|---|---|
-| `e^{-d/d₀}` | Exponential decay with distance from assigned target |
-| `battery_i` | Normalised battery level (0–1) |
-| `H_env,i` | Environmental disturbance factor |
-| `n_i` | Sensor / communication noise factor |
+First-hand evaluation of a drone's own observable state, incorporating factors such as distance to its assigned target, battery level, environmental disturbance, and sensor/communication noise.
 
 ### Indirect Trust
 
-Peer reputation aggregated via weighted median:
-
-$$T_i^\text{ind}(t) = \text{weighted\_median}\!\left(\{T_k^\text{dir}(t)\}_{j \in N_i},\ \{w_{j \to i}(t)\}_{j \in N_i}\right)$$
-
-Where the weight assigned to reporter drone j is:
-
-$$w_{j \to i}(t) = \bigl(T(t)\bigr)_j^\gamma \cdot q_j(t) \cdot \exp(-\lambda \Delta_{j,i}(t))$$
-
-`q_j(t)` is the link quality, `Δ_{j,i}(t)` penalises inconsistent past recommendations, γ is the reputation impact factor, and λ is the consistency penalty coefficient.
+Peer reputation aggregated from neighbouring drones, weighted by their own trustworthiness, link quality, and consistency of past recommendations.
 
 ---
 
